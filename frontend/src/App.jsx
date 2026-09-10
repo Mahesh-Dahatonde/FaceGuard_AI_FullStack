@@ -41,7 +41,7 @@ import {
   BookOpen,
 } from "lucide-react";
 
-const API = "http://localhost:8081/api";
+const API = "https://faceguard-ai-fullstack.onrender.com/api";
 const AI_API = "http://localhost:5000";
 
 /* =========================
