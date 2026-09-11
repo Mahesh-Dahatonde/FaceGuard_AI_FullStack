@@ -42,7 +42,7 @@ import {
 } from "lucide-react";
 
 const API = "https://faceguard-ai-fullstack.onrender.com/api";
-const AI_API = "http://localhost:5000";
+const AI_API = "https://essentials-statistics-cafe-quiet.trycloudflare.com";
 
 /* =========================
    API HELPERS
