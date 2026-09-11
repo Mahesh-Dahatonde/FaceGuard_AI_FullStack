@@ -25,7 +25,8 @@ print("=" * 60)
 midas = torch.hub.load(
     "intel-isl/MiDaS",
     "MiDaS_small",
-    trust_repo=True
+    trust_repo=True,
+    skip_validation=True
 )
 
 midas.eval()
@@ -36,7 +37,8 @@ midas.to(device)
 midas_transforms = torch.hub.load(
     "intel-isl/MiDaS",
     "transforms",
-    trust_repo=True
+    trust_repo=True,
+    skip_validation=True
 )
 
 transform = midas_transforms.small_transform
