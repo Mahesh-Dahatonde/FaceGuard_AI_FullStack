@@ -10,6 +10,7 @@ import {
 import {
   ShieldCheck,
   ScanFace,
+  Upload,
   LayoutDashboard,
   History as HistoryIcon,
   User,
@@ -42,7 +43,7 @@ import {
 } from "lucide-react";
 
 const API = "https://faceguard-ai-fullstack.onrender.com/api";
-const AI_API = "https://communications-airport-era-honey.trycloudflare.com";
+const AI_API = "http://127.0.0.1:5000";
 
 /* =========================
    API HELPERS
@@ -877,6 +878,7 @@ function QuickCard({ icon, title, text, to }) {
 function Scan() {
   const video = useRef(null);
   const streamRef = useRef(null);
+  const fileInput = useRef(null);
 
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -925,6 +927,76 @@ function Scan() {
     setRunning(false);
   }
 
+  
+       async function handleImageUpload(e) {
+    const file = e.target.files?.[0];
+
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setMessage("Please select a valid image file.");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setMessage("Image size must be less than 10 MB.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setMessage("");
+      setResult(null);
+
+      const formData = new FormData();
+      formData.append("image", file);
+
+      const response = await fetch(AI_API + "/analyze", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("AI service failed");
+      }
+
+      const data = await response.json();
+
+      const resultData = {
+        result: data.result,
+        confidence: data.confidence,
+        depthScore: data.depthScore,
+        depthMapImage: data.depthMapImage,
+        textureScore: data.textureScore,
+        fusionScore: data.fusionScore,
+        screenScore: data.screenScore,
+      };
+
+      setResult(resultData);
+
+      const user = getUser();
+
+      if (user?.userId) {
+        try {
+          await post("/scans", {
+            userId: user.userId,
+            ...resultData,
+          });
+        } catch (saveError) {
+          console.error("History save failed", saveError);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage(
+        "Image analysis failed. Check that the Python AI service is running on port 5000."
+      );
+    } finally {
+      setLoading(false);
+      e.target.value = "";
+    }
+  }
+
   async function analyze() {
     if (!video.current) return;
 
@@ -951,6 +1023,10 @@ function Scan() {
         canvas.toBlob(resolve, "image/jpeg", 0.9)
       );
 
+      if (!blob) {
+        throw new Error("Image capture failed");
+      }
+
       const formData = new FormData();
       formData.append("image", blob, "face.jpg");
 
@@ -969,6 +1045,7 @@ function Scan() {
         result: data.result,
         confidence: data.confidence,
         depthScore: data.depthScore,
+        depthMapImage: data.depthMapImage,
         textureScore: data.textureScore,
         fusionScore: data.fusionScore,
         screenScore: data.screenScore,
@@ -998,6 +1075,7 @@ function Scan() {
       setLoading(false);
     }
   }
+    
 
   useEffect(() => {
     return () => stopCamera();
@@ -1075,6 +1153,24 @@ function Scan() {
               </div>
             )}
           </div>
+          <div className="upload-controls">
+  <input
+    ref={fileInput}
+    type="file"
+    accept="image/*"
+    onChange={handleImageUpload}
+    style={{ display: "none" }}
+  />
+
+  <button
+    className="primary-btn"
+    onClick={() => fileInput.current?.click()}
+    disabled={loading}
+  >
+    <Upload size={18} />
+    {loading ? "Analyzing..." : "Upload Image"}
+  </button>
+</div>
 
           {running && (
             <div className="camera-controls">
@@ -1191,29 +1287,26 @@ function ResultCard({ result }) {
         <strong>{Number(result.confidence || 0).toFixed(1)}%</strong>
       </div>
 
-      <div className="result-metrics">
-        <Metric
-          title="Depth"
-          value={result.depthScore}
-        />
+     <div className="result-metrics">
+  <Metric title="Depth" value={result.depthScore} />
+  <Metric title="Texture" value={result.textureScore} />
+  <Metric title="Screen" value={result.screenScore} />
+  <Metric title="Fusion" value={result.fusionScore} />
+</div>
 
-        <Metric
-          title="Texture"
-          value={result.textureScore}
-        />
-
-        <Metric
-          title="Screen"
-          value={result.screenScore}
-        />
-
-        <Metric
-          title="Fusion"
-          value={result.fusionScore}
-        />
-      </div>
-    </div>
-  );
+{result.depthMapImage && (
+  <div className="depth-map-section">
+    <h3>Monocular Depth Map</h3>
+    <p>AI-generated depth visualization</p>
+    <img
+      src={`data:image/jpeg;base64,${result.depthMapImage}`}
+      alt="Generated Depth Map"
+      className="depth-map-image"
+    />
+  </div>
+)}
+</div>
+);
 }
 
 function Metric({ title, value }) {

@@ -10,7 +10,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = {"https://faceguard-ai-fullstack-1.onrender.com", "http://localhost:5173"})
 public class AuthController {
     private final UserRepository users;
     private final PasswordEncoder encoder;

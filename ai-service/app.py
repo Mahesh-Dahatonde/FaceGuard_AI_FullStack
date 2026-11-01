@@ -2,8 +2,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 import cv2
+import base64
 import numpy as np
 import torch
+import torch.nn as nn
+from torchvision import models, transforms
 
 
 # ============================================================
@@ -31,7 +34,7 @@ midas = torch.hub.load(
 
 midas.eval()
 
-device = torch.device("cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 midas.to(device)
 
 midas_transforms = torch.hub.load(
@@ -44,6 +47,46 @@ midas_transforms = torch.hub.load(
 transform = midas_transforms.small_transform
 
 print("MiDaS Model Loaded Successfully!")
+# ============================================================
+# TRAINED MOBILENETV3 RGB MODEL
+# ============================================================
+
+print("Loading trained MobileNetV3 model...")
+
+MODEL_PATH = (
+    __import__("pathlib").Path(__file__).parent
+    / "models"
+    / "mobilenetv3_nuaa_best.pth"
+)
+
+checkpoint = torch.load(
+    MODEL_PATH,
+    map_location=device,
+    weights_only=False
+)
+
+rgb_model = models.mobilenet_v3_small(weights=None)
+
+input_features = rgb_model.classifier[-1].in_features
+rgb_model.classifier[-1] = nn.Linear(input_features, 2)
+
+rgb_model.load_state_dict(checkpoint["model_state_dict"])
+rgb_model.to(device)
+rgb_model.eval()
+
+rgb_transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((160, 160)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+print("MobileNetV3 Loaded Successfully!")
+print("RGB Model Device:", device)
+print("Class Mapping:", checkpoint["class_to_idx"])
 
 
 # ============================================================
@@ -70,7 +113,7 @@ def health():
         "status": "AI service running",
         "service": "FaceGuard AI",
         "model": "MiDaS_small",
-        "device": "CPU",
+        "device": str(device).upper(),
         "framework": "Two-Stage Cascade"
     })
 
@@ -105,31 +148,27 @@ def detect_face(image):
         key=lambda r: r[2] * r[3]
     )
 
-    # Padding
-    px = int(w * 0.20)
-    py = int(h * 0.25)
+        # Equal padding on all sides
+    padding = int(max(w, h) * 0.20)
 
-    x1 = max(0, x - px)
-    y1 = max(0, y - py)
+    x1 = max(0, x - padding)
+    y1 = max(0, y - padding)
 
-    x2 = min(
-        image.shape[1],
-        x + w + px
-    )
+    x2 = min(image.shape[1], x + w + padding)
+    y2 = min(image.shape[0], y + h + padding)
 
-    y2 = min(
-        image.shape[0],
-        y + h + py
-    )
+    crop = image[y1:y2, x1:x2]
 
-    crop = image[
-        y1:y2,
-        x1:x2
-    ]
+    if crop.size == 0:
+        return None
 
     print(
         f"Face detected: x={x}, y={y}, "
         f"width={w}, height={h}"
+    )
+
+    print(
+        f"Face crop size: {crop.shape[1]}x{crop.shape[0]}"
     )
 
     return crop
@@ -140,201 +179,77 @@ def detect_face(image):
 # SCREEN / PRINT / IMAGE CUE
 # ============================================================
 
-def stage1_spoof_analysis(image, face):
+# ============================================================
+# STAGE 1 - TRAINED MOBILENETV3 RGB CLASSIFIER
+# ============================================================
 
-    try:
+def stage1_spoof_analysis(face):
 
-        gray = cv2.cvtColor(
-            face,
-            cv2.COLOR_BGR2GRAY
-        )
+    image_rgb = cv2.cvtColor(
+        face,
+        cv2.COLOR_BGR2RGB
+    )
 
-        # ----------------------------------------------------
-        # 1. Blur detection
-        # ----------------------------------------------------
+    input_tensor = rgb_transform(image_rgb)
+    input_tensor = input_tensor.unsqueeze(0).to(device)
 
-        laplacian = cv2.Laplacian(
-            gray,
-            cv2.CV_64F
-        )
+    with torch.no_grad():
+        outputs = rgb_model(input_tensor)
+        probabilities = torch.softmax(outputs, dim=1)[0]
 
-        lap_var = float(
-            laplacian.var()
-        )
+    real_score = float(probabilities[0].item()) * 100.0
+    spoof_score = float(probabilities[1].item()) * 100.0
 
-        # ----------------------------------------------------
-        # 2. High frequency analysis
-        # ----------------------------------------------------
+    print("Stage 1 MobileNet REAL:", round(real_score, 2))
+    print("Stage 1 MobileNet SPOOF:", round(spoof_score, 2))
 
-        fft = np.fft.fft2(gray)
-
-        fft_shift = np.fft.fftshift(
-            fft
-        )
-
-        magnitude = np.abs(
-            fft_shift
-        )
-
-        h, w = magnitude.shape
-
-        cy = h // 2
-        cx = w // 2
-
-        radius = min(h, w) // 8
-
-        low_region = magnitude[
-            cy-radius:cy+radius,
-            cx-radius:cx+radius
-        ]
-
-        total_energy = np.sum(
-            magnitude
-        ) + 1e-8
-
-        low_energy = np.sum(
-            low_region
-        )
-
-        high_frequency_ratio = (
-            1.0 -
-            (low_energy / total_energy)
-        )
-
-        # ----------------------------------------------------
-        # 3. Local contrast
-        # ----------------------------------------------------
-
-        mean_value = float(
-            np.mean(gray)
-        )
-
-        std_value = float(
-            np.std(gray)
-        )
-
-        contrast_score = min(
-            100.0,
-            std_value * 2.0
-        )
-
-        # ----------------------------------------------------
-        # 4. Edge density
-        # ----------------------------------------------------
-
-        edges = cv2.Canny(
-            gray,
-            50,
-            150
-        )
-
-        edge_density = (
-            np.count_nonzero(edges)
-            /
-            edges.size
-        )
-
-        # ----------------------------------------------------
-        # Screen/print likelihood
-        #
-        # This is a cue, NOT a standalone detector.
-        # ----------------------------------------------------
-
-        screen_score = 0.0
-
-        # Low-frequency / display-like image
-        if lap_var < 80:
-            screen_score += 25
-
-        if lap_var < 45:
-            screen_score += 15
-
-        # Strong repetitive frequency pattern
-        if high_frequency_ratio > 0.35:
-            screen_score += 20
-
-        if high_frequency_ratio > 0.45:
-            screen_score += 15
-
-        # Very regular edge structure
-        if edge_density < 0.08:
-            screen_score += 10
-
-        # Extreme contrast
-        if std_value < 20 or std_value > 90:
-            screen_score += 5
-
-        screen_score = min(
-            100.0,
-            screen_score
-        )
-
-        # ----------------------------------------------------
-        # Texture quality score
-        # ----------------------------------------------------
-
-        texture_score = min(
-            100.0,
-            (
-                min(100.0, lap_var / 5.0) * 0.60
-                +
-                min(100.0, edge_density * 400) * 0.40
-            )
-        )
-
-        print(
-            "Stage 1 Laplacian:",
-            round(lap_var, 2)
-        )
-
-        print(
-            "Stage 1 Frequency Ratio:",
-            round(high_frequency_ratio, 4)
-        )
-
-        print(
-            "Stage 1 Edge Density:",
-            round(edge_density, 4)
-        )
-
-        print(
-            "Stage 1 Texture:",
-            round(texture_score, 2)
-        )
-
-        print(
-            "Stage 1 Screen/Print Score:",
-            round(screen_score, 2)
-        )
-
-        return {
-            "texture": round(
-                float(texture_score),
-                2
-            ),
-            "screen": round(
-                float(screen_score),
-                2
-            )
-        }
-
-    except Exception as e:
-
-        print(
-            "Stage 1 Error:",
-            e
-        )
-
-        return {
-            "texture": 0.0,
-            "screen": 0.0
-        }
+    return {
+        "real": round(real_score, 2),
+        "spoof": round(spoof_score, 2)
+    }
 
 
 # ============================================================
 # STAGE 2
 # MiDaS DEPTH
+# ============================================================# ============================================================
+# STAGE 2
+# MiDaS DEPTH
 # ============================================================
+def create_depth_map_image(face):
+    image_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
+    input_batch = transform(image_rgb).to(device)
+
+    with torch.no_grad():
+        prediction = midas(input_batch)
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=image_rgb.shape[:2],
+            mode="bicubic",
+            align_corners=False
+        ).squeeze()
+
+    depth_map = prediction.cpu().numpy()
+
+    depth_normalized = cv2.normalize(
+        depth_map,
+        None,
+        0,
+        255,
+        cv2.NORM_MINMAX
+    ).astype(np.uint8)
+
+    depth_colormap = cv2.applyColorMap(
+        depth_normalized,
+        cv2.COLORMAP_INFERNO
+    )
+
+    success, encoded_image = cv2.imencode(".jpg", depth_colormap)
+
+    if not success:
+        return None
+
+    return base64.b64encode(encoded_image).decode("utf-8")
 
 def stage2_depth_analysis(face):
 
@@ -478,132 +393,71 @@ def stage2_depth_analysis(face):
 # TWO-STAGE FUSION
 # ============================================================
 
-def analyze_face(image):
+# ============================================================
+# TWO-STAGE DATA FUSION
+# ============================================================
 
-    # --------------------------------------------------------
-    # Face detection
-    # --------------------------------------------------------
+def analyze_face(image):
 
     face = detect_face(image)
 
     if face is None:
-
-        print(
-            "No face detected."
-        )
+        print("No face detected.")
 
         return {
-            "result": "SPOOF",
-            "confidence": 80.0,
+            "result": "NO_FACE",
+            "confidence": 0.0,
             "depthScore": 0.0,
             "textureScore": 0.0,
-            "fusionScore": 20.0,
-            "screenScore": 80.0
+            "fusionScore": 0.0,
+            "screenScore": 0.0,
+            "rgbRealScore": 0.0,
+            "rgbSpoofScore": 0.0
         }
 
-    # --------------------------------------------------------
-    # STAGE 1
-    # --------------------------------------------------------
+    # STAGE 1: MobileNetV3
+    stage1 = stage1_spoof_analysis(face)
 
-    stage1 = stage1_spoof_analysis(
-        image,
-        face
-    )
+    rgb_real_score = stage1["real"]
+    rgb_spoof_score = stage1["spoof"]
 
-    texture_score = stage1["texture"]
-    screen_score = stage1["screen"]
+    # STAGE 2: MiDaS Depth
+    depth_score = stage2_depth_analysis(face)
+    depth_map_image = create_depth_map_image(face)
 
-    # --------------------------------------------------------
-    # STAGE 2
-    # --------------------------------------------------------
+    # PROVISIONAL FUSION
+    # These weights need validation and calibration.
+        # PROVISIONAL RGB + DEPTH FUSION
+    # Weights are experimental and require proper validation.
+    RGB_WEIGHT = 0.80
+    DEPTH_WEIGHT = 0.20
 
-    depth_score = stage2_depth_analysis(
-        face
-    )
-
-    # ========================================================
-    # CASCADE DECISION
-    # ========================================================
-
-    # Strong display/print evidence
-    # gets priority over depth.
-    if screen_score >= 55:
-
-        result = "SPOOF"
-
-        confidence = min(
-            95.0,
-            55.0 + screen_score * 0.40
-        )
-
-        fusion_score = 100 - confidence
-
-        print(
-            "CASCADE: Strong spoof evidence"
-        )
-
-    else:
-
-        # ----------------------------------------------------
-        # Normal fusion
-        #
-        # Depth is no longer dominant.
-        # ----------------------------------------------------
-
-        real_evidence = (
-            depth_score * 0.40
-            +
-            texture_score * 0.35
-            +
-            (100 - screen_score) * 0.25
-        )
-
-        fusion_score = max(
-            0.0,
-            min(
-                100.0,
-                real_evidence
-            )
-        )
-
-        fusion_score = round(
-            float(fusion_score),
-            2
-        )
-
-        # ----------------------------------------------------
-        # Conservative decision
-        # ----------------------------------------------------
-
-        if fusion_score >= 62:
-
-            result = "REAL"
-
-            confidence = fusion_score
-
-        else:
-
-            result = "SPOOF"
-
-            confidence = 100 - fusion_score
-
-    confidence = round(
-        float(confidence),
-        2
+    fusion_score = (
+        RGB_WEIGHT * rgb_real_score
+        + DEPTH_WEIGHT * depth_score
     )
 
     fusion_score = round(
-        float(fusion_score),
+        max(0.0, min(100.0, fusion_score)),
         2
     )
+
+    result = "REAL" if fusion_score >= 50 else "SPOOF"
+
+    confidence = max(
+        fusion_score,
+        100.0 - fusion_score
+    )
+
+    confidence = round(float(confidence), 2)
 
     print("=" * 60)
     print("FINAL DECISION")
     print("Result:", result)
     print("Confidence:", confidence)
+    print("MobileNet REAL:", rgb_real_score)
+    print("MobileNet SPOOF:", rgb_spoof_score)
     print("Depth:", depth_score)
-    print("Texture:", texture_score)
-    print("Screen:", screen_score)
     print("Fusion:", fusion_score)
     print("=" * 60)
 
@@ -611,12 +465,18 @@ def analyze_face(image):
         "result": result,
         "confidence": confidence,
         "depthScore": depth_score,
-        "textureScore": texture_score,
+        "depthMapImage": depth_map_image,
+
+        # Existing frontend fields kept for compatibility
+        "textureScore": rgb_real_score,
+        "screenScore": rgb_spoof_score,
+
         "fusionScore": fusion_score,
-        "screenScore": screen_score
+
+        # New descriptive fields
+        "rgbRealScore": rgb_real_score,
+        "rgbSpoofScore": rgb_spoof_score
     }
-
-
 # ============================================================
 # ANALYZE API
 # ============================================================

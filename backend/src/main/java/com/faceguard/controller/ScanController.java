@@ -10,7 +10,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/scans")
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = {"https://faceguard-ai-fullstack-1.onrender.com", "http://localhost:5173"})
 public class ScanController {
     private final ScanRepository scans;
 

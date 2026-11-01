@@ -3393,3 +3393,30 @@ a {
     font-size: 13px;
   }
 }
+.depth-map-section {
+  margin-top: 24px;
+  padding: 20px;
+  background: #171c2b;
+  border: 1px solid #30394d;
+  border-radius: 14px;
+}
+
+.depth-map-section h3 {
+  margin-bottom: 8px;
+  color: #ffffff;
+}
+
+.depth-map-section p {
+  color: #aab4c8;
+  margin-bottom: 16px;
+}
+
+.depth-map-image {
+  display: block;
+  width: 100%;
+  max-width: 500px;
+  height: auto;
+  margin: 0 auto;
+  border-radius: 12px;
+  border: 1px solid #46516a;
+}

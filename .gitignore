@@ -29,3 +29,14 @@ backend/data/
 # OS
 .DS_Store
 Thumbs.db
+# AI datasets and local experiments
+ai-service/dataset/
+ai-service/custom_video_dataset/
+ai-service_backup/
+ai-service/models/
+
+# Backup scripts
+ai-service/*backup*.py
+ai-service/app_before_*.py
+ai-service/app_fixed_fusion_backup.py
+ai-service/app_heuristic_backup.py
